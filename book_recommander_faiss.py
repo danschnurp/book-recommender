@@ -10,7 +10,7 @@ from faiss import write_index, read_index
 
 
 def load_data(ratings_path: Path, books_path: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    ratings = pd.read_csv(ratings_path, encoding='cp1251', sep=';')
+    ratings = pd.read_csv(ratings_path, encoding='cp1251', sep=';', on_bad_lines='skip')
     ratings = ratings[ratings['Book-Rating'] != 0]
 
     books = pd.read_csv(books_path, encoding='cp1251', sep=';', on_bad_lines='skip')
@@ -21,12 +21,6 @@ def load_data(ratings_path: Path, books_path: Path) -> Tuple[pd.DataFrame, pd.Da
 def preprocess_data(ratings: pd.DataFrame, books: pd.DataFrame) -> pd.DataFrame:
     dataset = pd.merge(ratings, books, on=['ISBN'])
     return dataset.apply(lambda x: x.str.lower() if x.dtype == 'object' else x)
-
-
-def get_tolkien_readers(data: pd.DataFrame) -> np.ndarray:
-    tolkien_mask = (data['Book-Title'] == 'the fellowship of the ring (the lord of the rings, part 1)') & \
-                   (data['Book-Author'].str.contains("tolkien"))
-    return data.loc[tolkien_mask, 'User-ID'].unique()
 
 
 def get_books_to_compare(data: pd.DataFrame, min_ratings: int = 8) -> List[str]:
@@ -59,7 +53,6 @@ def build_faiss_index(data: pd.DataFrame) -> Tuple[faiss.IndexFlatIP, np.ndarray
 
     write_index(index, "data/books.index")
 
-
     return index, normalized_data
 
 
@@ -81,7 +74,6 @@ def compute_correlations_faiss(index: faiss.IndexFlatIP, data: np.ndarray, book_
         'corr': similarities[0],
         'avg_rating': avg_ratings[I[0]]
     })
-
     return corr_df.sort_values('corr', ascending=False)
 
 
@@ -90,7 +82,6 @@ def main(target="Harry Potter and the Sorcerer\'s Stone (Book 1)"):
     ratings, books = load_data(data_dir / 'BX-Book-Ratings.csv', data_dir / 'BX-Books.csv')
 
     dataset = preprocess_data(ratings, books)
-    tolkien_readers = get_tolkien_readers(dataset)
 
     books_to_compare = get_books_to_compare(dataset)
 

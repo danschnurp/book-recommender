@@ -3,3 +3,7 @@
 faiss-cpu
 pandas
 numpy
+gradio
+huggingface_hub
+fuzzywuzzy
+python-Levenshtein

@@ -1,3 +1,20 @@
+---
+title: Book Recommender
+emoji: 📚
+colorFrom: gray
+colorTo: green
+sdk: gradio
+sdk_version: "4.44.1"
+app_file: app.py
+pinned: false
+configs:
+- config_name: BX-Book-Ratings
+  data_files: "BX-Book-Ratings.csv"
+- config_name: BX-Books
+  data_files: "BX-Books.csv"
+- config_name: books
+  data_files: "books.index"
+---
 # Book Correlation Analysis using Faiss
 
 This project implements a book correlation analysis system using collaborative filtering techniques and Faiss for efficient similarity search. The script analyzes user ratings of books to find correlations between different titles.

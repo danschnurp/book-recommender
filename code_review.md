@@ -20,7 +20,7 @@
     - Usage instructions
     - Sample outputs
 
-#### 4. Similarity Measurement
+## 4. Similarity Measurement
 - **Issue:** Only correlation is used for measuring book rating similarity.
 - **Recommendation:** Explore more advanced similarity measures:
   - Implement K-Nearest Neighbors (K-NN) for collaborative filtering to provide more nuanced recommendations.

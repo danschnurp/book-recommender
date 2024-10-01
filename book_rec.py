@@ -73,3 +73,5 @@ for LoR_book in LoR_list:
 print("Correlation for book:", LoR_list[0])
 #print("Average rating of LOR:", ratings_data_raw[ratings_data_raw['Book-Title']=='the fellowship of the ring (the lord of the rings, part 1'].groupby(ratings_data_raw['Book-Title']).mean()))
 rslt = result_list[0]
+
+print(rslt)

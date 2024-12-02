@@ -7,3 +7,5 @@ gradio
 huggingface_hub
 fuzzywuzzy
 python-Levenshtein
+scikit-learn
+matplotlib

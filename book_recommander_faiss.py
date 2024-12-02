@@ -9,6 +9,15 @@ import faiss
 from faiss import write_index, read_index
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+import re
+import torch
+
+from transformers import  BertTokenizerFast, BertModel
+
+
+def is_valid_isbn(isbn):
+    pattern = r'^(?:(?:978|979)\d{10}|\d{9}[0-9X])$'
+    return bool(re.match(pattern, isbn))
 
 
 def load_data(ratings_path: Path, books_path: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -25,14 +34,9 @@ def preprocess_data(ratings: pd.DataFrame, books: pd.DataFrame) -> pd.DataFrame:
     return dataset.apply(lambda x: x.str.lower() if x.dtype == 'object' else x)
 
 
-def get_books_to_compare(data: pd.DataFrame, ratings_by_isbn, min_ratings: int = 5) -> List[str]:
-    return ratings_by_isbn[ratings_by_isbn[ 'Book-Rating'] >= min_ratings]["myindex"].tolist()
-
-
 def prepare_correlation_dataset(data: pd.DataFrame, books_to_compare: List[str]) -> pd.DataFrame:
-    ratings_data = data.loc[data['Book-Title'].isin(books_to_compare), ['User-ID', 'Book-Rating', 'Book-Title']]
-    ratings_mean = ratings_data.groupby(['User-ID', 'Book-Title'])['Book-Rating'].mean().reset_index()
-    return ratings_mean.pivot(index='User-ID', columns='Book-Title', values='Book-Rating').fillna(0)
+    ratings_data = data.loc[data['Book-Title'].isin(books_to_compare), ['Book-Title']]
+    return ratings_data.pivot(index='ISBN', columns='Book-Title', values='Book-Title').fillna(0)
 
 
 def build_faiss_index(data: pd.DataFrame) -> Tuple[faiss.IndexFlatIP, np.ndarray]:
@@ -67,8 +71,6 @@ def compute_correlations_faiss(index: faiss.IndexFlatIP, data: np.ndarray, book_
     k = len(book_titles)  # Search for all books
     similarities, I = index.search(target_vector.astype('float32'), k)
 
-
-
     # Reduce database and query vectors to 2D for visualization
     pca = PCA(n_components=2)
     reduced_db = pca.fit_transform(data)
@@ -97,19 +99,28 @@ def main(target="Harry Potter and the Sorcerer\'s Stone (Book 1)"):
     ratings, books = load_data(data_dir / 'BX-Book-Ratings.csv', data_dir / 'BX-Books.csv')
 
     dataset = preprocess_data(ratings, books)
+    ratings = ratings[ratings['ISBN'].apply(is_valid_isbn)]
+    dataset = dataset[dataset['ISBN'].apply(is_valid_isbn)]
 
-    ratings_by_isbn = ratings.drop(columns="User-ID")[ratings.drop(columns="User-ID")["Book-Rating"] > 0].groupby(['ISBN']).mean()
-    ratings_by_isbn["myindex"] = np.arange(len(ratings_by_isbn)).tolist()
-    dataset["myindex"] = np.arange(len(ratings_by_isbn)).tolist()
-    # todo delete duplicates in dataset
-    books_to_compare = get_books_to_compare(dataset, ratings_by_isbn)
-    correlation_dataset = prepare_correlation_dataset(dataset, books_to_compare)
+    ratings_by_isbn = ratings.drop(columns="User-ID")[ratings.drop(columns="User-ID")["Book-Rating"] > 0]
+    ratings_by_isbn = ratings_by_isbn.groupby('ISBN')["Book-Rating"].mean().reset_index()
+    ratings_by_isbn = ratings_by_isbn.drop_duplicates(subset=['ISBN'])
+    dataset = dataset.drop(columns=["User-ID", "Book-Rating"])
+    dataset = dataset[dataset['ISBN'].isin(ratings_by_isbn['ISBN'])]
+    dataset = dataset.drop_duplicates(subset=['ISBN'])
+    tokenizer = BertTokenizerFast.from_pretrained('google-bert/bert-base-uncased')
+    model = BertModel.from_pretrained("google-bert/bert-base-uncased")
+    dataset = preprocess_data(dataset, ratings_by_isbn)
+    # todo
+    dataset["embedding"] = [model(**tokenizer(i, return_tensors='pt')) for i in dataset["Book-Title"]]
+
+
 
     # Build Faiss index
     faiss_index, normalized_data = build_faiss_index(dataset)
 
     target_book = target.lower()
-    correlations = compute_correlations_faiss(faiss_index, normalized_data, correlation_dataset.columns.tolist(),
+    correlations = compute_correlations_faiss(faiss_index, normalized_data, dataset["Book-Title"],
                                               target_book)
 
     print(f"Top 10 correlated books for '{target_book}':")

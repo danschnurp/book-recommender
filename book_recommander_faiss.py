@@ -11,8 +11,9 @@ from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import re
 import torch
+from tqdm import tqdm
 
-from transformers import  BertTokenizerFast, BertModel
+from transformers import BertTokenizerFast, BertModel, AutoTokenizer, AutoModel
 
 
 def is_valid_isbn(isbn):
@@ -39,57 +40,68 @@ def prepare_correlation_dataset(data: pd.DataFrame, books_to_compare: List[str])
     return ratings_data.pivot(index='ISBN', columns='Book-Title', values='Book-Title').fillna(0)
 
 
-def build_faiss_index(data: pd.DataFrame) -> Tuple[faiss.IndexFlatIP, np.ndarray]:
-    # Transpose the data so each column represents a book
-    transposed_data = data.T.values
-
+def create_embedding(dataset):
+    model_name = "mrm8488/bert-tiny-finetuned-sms-spam-detection"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModel.from_pretrained(model_name)
+    print("creating tokens")
+    tokens = [tokenizer(i, padding="max_length", truncation=True, max_length=10, return_tensors='pt')
+              for i in dataset]
+    print("\ncreating embedding\n")
+    emb = []
+    for i in tqdm(tokens):
+        emb.append(model(**i,)["last_hidden_state"].detach().numpy().squeeze().reshape(-1))
     # Normalize the data
-    normalized_data = transposed_data / np.linalg.norm(transposed_data, axis=1)[:, np.newaxis]
+    normalized_data = emb / np.linalg.norm(emb)
+    return normalized_data
 
+
+def build_faiss_index(dataset: pd.DataFrame) -> Tuple[faiss.IndexFlatIP, np.ndarray]:
     if os.path.exists("data/books.index"):
-        return read_index("data/books.index"), normalized_data
+        return read_index("data/books.index")
 
+    dataset["embedding"] = create_embedding(dataset["Book-Title"])
+    print("creating index")
+    normalized_data = dataset["embedding"]
     # Create a Faiss index
-    dimension = normalized_data.shape[1]
+    dimension = normalized_data.shape[-1]
     index = faiss.IndexFlatIP(dimension)
 
     # Add vectors to the index
-    index.add(normalized_data.astype('float32'))
+    index.add(normalized_data.astype('float16'))
 
     write_index(index, "data/books.index")
 
-    return index, normalized_data
+    return index
 
 
-def compute_correlations_faiss(index: faiss.IndexFlatIP, data: np.ndarray, book_titles: List[str],
+def compute_correlations_faiss(index: faiss.IndexFlatIP, book_titles: List[str],
                                target_book: str, ) -> pd.DataFrame:
-    target_index = book_titles.index(target_book)
+    emb = create_embedding([target_book])
+    # target_vector = book_titles.index(emb)
 
-    target_vector = data[target_index].reshape(1, -1)
 
     # Perform the search
     k = len(book_titles)  # Search for all books
-    similarities, I = index.search(target_vector.astype('float32'), k)
+    similarities, I = index.search(emb.astype('float16'), k)
 
-    # Reduce database and query vectors to 2D for visualization
-    pca = PCA(n_components=2)
-    reduced_db = pca.fit_transform(data)
-    reduced_query = pca.transform(target_vector)
+    # # Reduce database and query vectors to 2D for visualization
+    # pca = PCA(n_components=2)
+    # reduced_db = pca.fit_transform(data)
+    # reduced_query = pca.transform(target_vector)
+    #
+    # # Scatter plot
+    # plt.scatter(reduced_db[:, 0], reduced_db[:, 1], label='Database Vectors', alpha=0.5)
+    # plt.scatter(reduced_query[:, 0], reduced_query[:, 1], label='Query Vectors', marker='X', color='red')
+    # plt.legend()
+    # plt.title("PCA Projection of IndexFlatIP Vectors")
+    # plt.show()
 
-    # Scatter plot
-    plt.scatter(reduced_db[:, 0], reduced_db[:, 1], label='Database Vectors', alpha=0.5)
-    plt.scatter(reduced_query[:, 0], reduced_query[:, 1], label='Query Vectors', marker='X', color='red')
-    plt.legend()
-    plt.title("PCA Projection of IndexFlatIP Vectors")
-    plt.show()
 
-    # Compute average ratings
-    avg_ratings = np.mean(data[data[I[0]] > 0.], axis=1)
 
     corr_df = pd.DataFrame({
         'book': [book_titles[i] for i in I[0]],
-        'corr': similarities[0],
-        'avg_rating': avg_ratings[I[0]]
+        'corr': similarities[0]
     })
     return corr_df.sort_values('corr', ascending=False)
 
@@ -108,19 +120,12 @@ def main(target="Harry Potter and the Sorcerer\'s Stone (Book 1)"):
     dataset = dataset.drop(columns=["User-ID", "Book-Rating"])
     dataset = dataset[dataset['ISBN'].isin(ratings_by_isbn['ISBN'])]
     dataset = dataset.drop_duplicates(subset=['ISBN'])
-    tokenizer = BertTokenizerFast.from_pretrained('google-bert/bert-base-uncased')
-    model = BertModel.from_pretrained("google-bert/bert-base-uncased")
     dataset = preprocess_data(dataset, ratings_by_isbn)
-    # todo
-    dataset["embedding"] = [model(**tokenizer(i, return_tensors='pt')) for i in dataset["Book-Title"]]
-
-
-
     # Build Faiss index
-    faiss_index, normalized_data = build_faiss_index(dataset)
+    faiss_index = build_faiss_index(dataset)
 
     target_book = target.lower()
-    correlations = compute_correlations_faiss(faiss_index, normalized_data, dataset["Book-Title"],
+    correlations = compute_correlations_faiss(faiss_index, dataset["Book-Title"],
                                               target_book)
 
     print(f"Top 10 correlated books for '{target_book}':")

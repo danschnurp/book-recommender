@@ -171,7 +171,23 @@ def recommend_books(target_book: str, num_recommendations: int = 10) -> str:
         for idx, (_, row) in enumerate(recommendations.iterrows(), 1) if dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[0] not in dups
     ])
     # "ISBN";"Book-Title";"Book-Author";"Year-Of-Publication";"Publisher";"Image-URL-S"
-    return result
+
+    result_df = pd.DataFrame([
+        {
+            "Rank": idx,
+            "Title": dataset.loc[dataset['Book-Title'] == row['book'], 'Book-Title'].values[0],
+            "Author": dataset.loc[dataset['Book-Title'] == row['book'], 'Book-Author'].values[0],
+            "Year": dataset.loc[dataset['Book-Title'] == row['book'], 'Year-Of-Publication'].values[0],
+            "Publisher": dataset.loc[dataset['Book-Title'] == row['book'], 'Publisher'].values[0],
+            "ISBN": dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[0],
+            "Rating": ratings_by_isbn.loc[
+                ratings_by_isbn['ISBN'] == dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[
+                    0], 'Book-Rating'].values[0]
+        }
+        for idx, (_, row) in enumerate(recommendations.iterrows(), 1)
+    ])
+
+    return result_df
 
 
 # Create Gradio interface
@@ -181,7 +197,14 @@ iface = gr.Interface(
         gr.Textbox(label="Enter a book title"),
         gr.Slider(minimum=1, maximum=20, step=1, label="Number of recommendations", value=10)
     ],
-    outputs=gr.Textbox(label="Recommendations"),
+    outputs=[
+        gr.Dataframe(
+            headers=["Rank", "Title", "Author", "Year", "Publisher", "ISBN", "Rating"],
+            type="pandas",
+
+        ),
+        gr.JSON(label="Detailed Recommendations")
+    ],
     title="Book Recommender",
     description="Enter a book title to get recommendations based on user ratings and book similarities."
 )

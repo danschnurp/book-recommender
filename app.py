@@ -9,6 +9,7 @@ import faiss
 from faiss import write_index, read_index
 import gradio as gr
 from fuzzywuzzy import process
+from pandas import DataFrame
 from tqdm import tqdm
 from transformers import BertTokenizerFast, BertModel, AutoTokenizer, AutoModel
 
@@ -131,7 +132,7 @@ def load_and_prepare_data():
     book_titles = dataset["Book-Title"]
 
 
-def recommend_books(target_book: str, num_recommendations: int = 10) -> str:
+def recommend_books(target_book: str, num_recommendations: int = 10):
     global dataset, faiss_index, normalized_data, book_titles, ratings_by_isbn
 
     if dataset is None or faiss_index is None or normalized_data is None or book_titles is None:
@@ -158,20 +159,7 @@ def recommend_books(target_book: str, num_recommendations: int = 10) -> str:
 
     recommendations = recommendations.head(num_recommendations)
 
-    result = f"Top {num_recommendations} recommendations for '{target_book}':\n\n"
     dups = []
-    result += "\n\n".join([
-        f"{idx, dups.append(dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[0])}. "
-        f"Title: {dataset.loc[dataset['Book-Title'] == row['book'], 'Book-Title'].values[0]}, "
-            f"Author: {dataset.loc[dataset['Book-Title'] == row['book'], 'Book-Author'].values[0]}, "
-    f"Year: {dataset.loc[dataset['Book-Title'] == row['book'], 'Year-Of-Publication'].values[0]}, "
-    f"Publisher: {dataset.loc[dataset['Book-Title'] == row['book'], 'Publisher'].values[0]}, "
-        f"ISBN: {dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[0]}, "
-        f"Rating: {ratings_by_isbn.loc[ratings_by_isbn['ISBN'] == dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[0], 'Book-Rating'].values[0]}"
-        for idx, (_, row) in enumerate(recommendations.iterrows(), 1) if dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[0] not in dups
-    ])
-    # "ISBN";"Book-Title";"Book-Author";"Year-Of-Publication";"Publisher";"Image-URL-S"
-
     result_df = pd.DataFrame([
         {
             "Rank": idx,
@@ -182,9 +170,11 @@ def recommend_books(target_book: str, num_recommendations: int = 10) -> str:
             "ISBN": dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[0],
             "Rating": ratings_by_isbn.loc[
                 ratings_by_isbn['ISBN'] == dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[
-                    0], 'Book-Rating'].values[0]
+                    0], 'Book-Rating'].values[0],
+            "none":  dups.append(dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[0])
         }
         for idx, (_, row) in enumerate(recommendations.iterrows(), 1)
+        if dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[0] not in dups
     ])
 
     return result_df
@@ -202,8 +192,7 @@ iface = gr.Interface(
             headers=["Rank", "Title", "Author", "Year", "Publisher", "ISBN", "Rating"],
             type="pandas",
 
-        ),
-        gr.JSON(label="Detailed Recommendations")
+        )
     ],
     title="Book Recommender",
     description="Enter a book title to get recommendations based on user ratings and book similarities."

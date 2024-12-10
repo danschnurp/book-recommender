@@ -138,5 +138,6 @@ def main(target="Harry Potter and the Sorcerer\'s Stone (Book 1)"):
 if __name__ == "__main__":
     # main(target='the fellowship of the ring (the lord of the rings, part 1)')
     t1 = time.time()
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
     main()
     print(time.time() - t1, "seconds")

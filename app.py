@@ -1,4 +1,6 @@
 import os
+import re
+
 import pandas as pd
 import numpy as np
 
@@ -7,6 +9,9 @@ import faiss
 from faiss import write_index, read_index
 import gradio as gr
 from fuzzywuzzy import process
+from pandas import DataFrame
+from tqdm import tqdm
+from transformers import BertTokenizerFast, BertModel, AutoTokenizer, AutoModel
 
 # Global variables to store loaded data
 dataset = None
@@ -15,10 +20,18 @@ normalized_data = None
 book_titles = None
 
 
-def load_data(ratings_path: str, books_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    ratings = pd.read_csv(ratings_path, encoding='cp1251', sep=';')
+def is_valid_isbn(isbn):
+    pattern = r'^(?:(?:978|979)\d{10}|\d{9}[0-9X])$'
+    return bool(re.match(pattern, isbn))
+
+
+
+def load_data(ratings_path, books_path) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    ratings = pd.read_csv(ratings_path, encoding='cp1251', sep=';', on_bad_lines='skip')
     ratings = ratings[ratings['Book-Rating'] != 0]
+
     books = pd.read_csv(books_path, encoding='cp1251', sep=';', on_bad_lines='skip')
+
     return ratings, books
 
 
@@ -27,89 +40,144 @@ def preprocess_data(ratings: pd.DataFrame, books: pd.DataFrame) -> pd.DataFrame:
     return dataset.apply(lambda x: x.str.lower() if x.dtype == 'object' else x)
 
 
-def get_books_to_compare(data: pd.DataFrame, min_ratings: int = 8) -> List[str]:
-    book_ratings = data.groupby('Book-Title')['User-ID'].count()
-    return book_ratings[book_ratings >= min_ratings].index.tolist()
+def create_embedding(dataset):
+    model_name = "mrm8488/bert-tiny-finetuned-sms-spam-detection"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModel.from_pretrained(model_name)
+    print("creating tokens")
+    tokens = [tokenizer(i, padding="max_length", truncation=True, max_length=10, return_tensors='pt')
+              for i in dataset]
+    print("\ncreating embedding\n")
+    emb = []
+    for i in tqdm(tokens):
+        emb.append(model(**i,)["last_hidden_state"].detach().numpy().squeeze().reshape(-1))
+    # Normalize the data
+    normalized_data = emb / np.linalg.norm(emb)
+    return normalized_data
 
 
-def prepare_correlation_dataset(data: pd.DataFrame, books_to_compare: List[str]) -> pd.DataFrame:
-    ratings_data = data.loc[data['Book-Title'].isin(books_to_compare), ['User-ID', 'Book-Rating', 'Book-Title']]
-    ratings_mean = ratings_data.groupby(['User-ID', 'Book-Title'])['Book-Rating'].mean().reset_index()
-    return ratings_mean.pivot(index='User-ID', columns='Book-Title', values='Book-Rating').fillna(0)
+def build_faiss_index(dataset: pd.DataFrame) -> Tuple[faiss.IndexFlatIP, np.ndarray]:
+    if os.path.exists("books.index"):
+        return read_index("books.index")
 
-
-def build_faiss_index(data: pd.DataFrame) -> Tuple[faiss.IndexFlatIP, np.ndarray]:
-    transposed_data = data.T.values
-    normalized_data = transposed_data / np.linalg.norm(transposed_data, axis=1)[:, np.newaxis]
-
-    index_file = "books.index"
-    if os.path.exists(index_file):
-        return read_index(index_file), normalized_data
-
-    dimension = normalized_data.shape[1]
+    dataset["embedding"] = create_embedding(dataset["Book-Title"])
+    print("creating index")
+    normalized_data = dataset["embedding"]
+    # Create a Faiss index
+    dimension = normalized_data.shape[-1]
     index = faiss.IndexFlatIP(dimension)
-    index.add(normalized_data.astype('float32'))
-    write_index(index, index_file)
-    return index, normalized_data
+
+    # Add vectors to the index
+    index.add(normalized_data.astype('float16'))
+
+    write_index(index, "data/books.index")
+
+    return index
 
 
-def compute_correlations_faiss(index: faiss.IndexFlatIP, data: np.ndarray, book_titles: List[str],
-                               target_book: str) -> pd.DataFrame:
-    target_index = book_titles.index(target_book)
-    target_vector = data[target_index].reshape(1, -1)
-    k = len(book_titles)
-    similarities, I = index.search(target_vector.astype('float32'), k)
-    avg_ratings = np.mean(data, axis=1)
+def compute_correlations_faiss(index: faiss.IndexFlatIP, book_titles: List[str],
+                               target_book, ) -> pd.DataFrame:
+    print(target_book, type(target_book))
+    emb = create_embedding([target_book[0]])
+    # target_vector = book_titles.index(emb)
+
+
+    # Perform the search
+    k = len(book_titles)  # Search for all books
+    similarities, I = index.search(emb.astype('float16'), k)
+
+    # # Reduce database and query vectors to 2D for visualization
+    # pca = PCA(n_components=2)
+    # reduced_db = pca.fit_transform(data)
+    # reduced_query = pca.transform(target_vector)
+    #
+    # # Scatter plot
+    # plt.scatter(reduced_db[:, 0], reduced_db[:, 1], label='Database Vectors', alpha=0.5)
+    # plt.scatter(reduced_query[:, 0], reduced_query[:, 1], label='Query Vectors', marker='X', color='red')
+    # plt.legend()
+    # plt.title("PCA Projection of IndexFlatIP Vectors")
+    # plt.show()
+
+
+
     corr_df = pd.DataFrame({
         'book': [book_titles[i] for i in I[0]],
-        'corr': similarities[0],
-        'avg_rating': avg_ratings[I[0]]
+        'corr': similarities[0]
     })
     return corr_df.sort_values('corr', ascending=False)
 
 
+
 def load_and_prepare_data():
-    global dataset, faiss_index, normalized_data, book_titles
+    global dataset, faiss_index, normalized_data, book_titles, ratings_by_isbn
 
     # Download data files from Hugging Face
-    ratings_file = "BX-Book-Ratings.csv"
-    books_file = "BX-Books.csv"
-
-    ratings, books = load_data(ratings_file, books_file)
+    ratings = "BX-Book-Ratings.csv"
+    books = "BX-Books.csv"
+    ratings, books = load_data(ratings, books)
     dataset = preprocess_data(ratings, books)
-    books_to_compare = get_books_to_compare(dataset)
-    correlation_dataset = prepare_correlation_dataset(dataset, books_to_compare)
-    faiss_index, normalized_data = build_faiss_index(correlation_dataset)
-    book_titles = correlation_dataset.columns.tolist()
+    ratings = ratings[ratings['ISBN'].apply(is_valid_isbn)]
+    dataset = dataset[dataset['ISBN'].apply(is_valid_isbn)]
+
+    ratings_by_isbn = ratings.drop(columns="User-ID")[ratings.drop(columns="User-ID")["Book-Rating"] > 0]
+    ratings_by_isbn = ratings_by_isbn.groupby('ISBN')["Book-Rating"].mean().reset_index()
+    ratings_by_isbn = ratings_by_isbn.drop_duplicates(subset=['ISBN'])
+    dataset = dataset.drop(columns=["User-ID", "Book-Rating"])
+    dataset = dataset[dataset['ISBN'].isin(ratings_by_isbn['ISBN'])]
+    dataset = dataset.drop_duplicates(subset=['ISBN'])
+    dataset = preprocess_data(dataset, ratings_by_isbn)
+    # Build Faiss index
+    faiss_index = build_faiss_index(dataset)
+
+    book_titles = dataset["Book-Title"]
 
 
-def recommend_books(target_book: str, num_recommendations: int = 10) -> str:
-    global dataset, faiss_index, normalized_data, book_titles
+def recommend_books(target_book: str, num_recommendations: int = 10):
+    global dataset, faiss_index, normalized_data, book_titles, ratings_by_isbn
 
     if dataset is None or faiss_index is None or normalized_data is None or book_titles is None:
         load_and_prepare_data()
+        dataset['ISBN'] = dataset['ISBN'].str.strip()
+        print("Before dropping duplicates:", len(dataset))
+        dataset = dataset.drop_duplicates(subset=['ISBN'])
+        print("After dropping duplicates:", len(dataset))
 
     target_book = target_book.lower()
     # Fuzzy match the input to the closest book title
-    closest_match, score = process.extractOne(target_book, book_titles)
+    closest_match = process.extractOne(target_book, book_titles)
 
-    if score < 50:  # You can adjust this threshold
-        return f"No close match found for '{target_book}'. Please try a different title."
 
-    if closest_match != target_book:
-        result = f"Closest match: '{closest_match}' (similarity: {score}%)\n\n"
-    else:
-        result = ""
+    correlations = compute_correlations_faiss(faiss_index, book_titles, closest_match)
 
-    correlations = compute_correlations_faiss(faiss_index, normalized_data, book_titles, closest_match)
+    recommendations = correlations[correlations['book'] != target_book]
 
-    recommendations = correlations[correlations['book'] != target_book].head(num_recommendations)
+    # Create a mask of unique ISBNs
+    unique_mask = dataset.duplicated(subset=['ISBN'], keep='first') == False
 
-    result = f"Top {num_recommendations} recommendations for '{target_book}':\n\n"
-    for i, (_, row) in enumerate(recommendations.iterrows(), 1):
-        result += f"{i}. {row['book']} (Correlation: {row['corr']:.2f})\n"
+    # Apply the mask
+    dataset = dataset[unique_mask]
 
-    return result
+    recommendations = recommendations.head(num_recommendations)
+
+    dups = []
+    result_df = pd.DataFrame([
+        {
+            "Rank": idx,
+            "Title": dataset.loc[dataset['Book-Title'] == row['book'], 'Book-Title'].values[0],
+            "Author": dataset.loc[dataset['Book-Title'] == row['book'], 'Book-Author'].values[0],
+            "Year": dataset.loc[dataset['Book-Title'] == row['book'], 'Year-Of-Publication'].values[0],
+            "Publisher": dataset.loc[dataset['Book-Title'] == row['book'], 'Publisher'].values[0],
+            "ISBN": dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[0],
+            "Rating": ratings_by_isbn.loc[
+                ratings_by_isbn['ISBN'] == dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[
+                    0], 'Book-Rating'].values[0],
+            "none":  dups.append(dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[0])
+        }
+        for idx, (_, row) in enumerate(recommendations.iterrows(), 1)
+        if dataset.loc[dataset['Book-Title'] == row['book'], 'ISBN'].values[0] not in dups
+    ])
+
+    return result_df
 
 
 # Create Gradio interface
@@ -119,7 +187,13 @@ iface = gr.Interface(
         gr.Textbox(label="Enter a book title"),
         gr.Slider(minimum=1, maximum=20, step=1, label="Number of recommendations", value=10)
     ],
-    outputs=gr.Textbox(label="Recommendations"),
+    outputs=[
+        gr.Dataframe(
+            headers=["Rank", "Title", "Author", "Year", "Publisher", "ISBN", "Rating"],
+            type="pandas",
+
+        )
+    ],
     title="Book Recommender",
     description="Enter a book title to get recommendations based on user ratings and book similarities."
 )

@@ -132,7 +132,8 @@ def load_and_prepare_data():
     book_titles = dataset["Book-Title"]
 
 
-def recommend_books(target_book: str, num_recommendations: int = 10):
+def recommend_books(target_book: str):
+    num_recommendations: int = 15
     global dataset, faiss_index, normalized_data, book_titles, ratings_by_isbn
 
     if dataset is None or faiss_index is None or normalized_data is None or book_titles is None:
@@ -162,7 +163,6 @@ def recommend_books(target_book: str, num_recommendations: int = 10):
     dups = []
     result_df = pd.DataFrame([
         {
-            "Rank": idx,
             "Title": dataset.loc[dataset['Book-Title'] == row['book'], 'Book-Title'].values[0],
             "Author": dataset.loc[dataset['Book-Title'] == row['book'], 'Book-Author'].values[0],
             "Year": dataset.loc[dataset['Book-Title'] == row['book'], 'Year-Of-Publication'].values[0],
@@ -185,11 +185,10 @@ iface = gr.Interface(
     fn=recommend_books,
     inputs=[
         gr.Textbox(label="Enter a book title"),
-        gr.Slider(minimum=1, maximum=20, step=1, label="Number of recommendations", value=10)
     ],
     outputs=[
         gr.Dataframe(
-            headers=["Rank", "Title", "Author", "Year", "Publisher", "ISBN", "Rating"],
+            headers=["Title", "Author", "Year", "Publisher", "ISBN", "Rating"],
             type="pandas",
 
         )
